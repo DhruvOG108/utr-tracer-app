@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import math
 
 # 1. Page Configuration
 st.set_page_config(
@@ -13,28 +14,10 @@ st.set_page_config(
 # 2. Custom CSS for Modern UI
 st.markdown("""
 <style>
-    /* Main layout tuning */
-    .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-    }
-    /* Headers styling */
-    .main-header {
-        font-size: 2rem;
-        font-weight: 700;
-        color: #1E293B;
-        margin-bottom: 0.2rem;
-    }
-    .sub-header {
-        font-size: 1rem;
-        color: #64748B;
-        margin-bottom: 1.5rem;
-    }
-    /* Custom metric cards */
-    [data-testid="stMetricValue"] {
-        font-size: 1.6rem;
-        font-weight: 600;
-    }
+    .main .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+    .main-header { font-size: 2rem; font-weight: 700; color: #1E293B; margin-bottom: 0.2rem; }
+    .sub-header { font-size: 1rem; color: #64748B; margin-bottom: 1.5rem; }
+    [data-testid="stMetricValue"] { font-size: 1.6rem; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -55,7 +38,17 @@ def trace_utr_layers(df_raw):
     final_report = []
     serial_no = 1
 
+    # Helper function to safely format the beneficiary (handles ATM withdrawals)
+    def format_beneficiary(val):
+        if pd.isna(val) or str(val).strip() == "" or str(val).strip().lower() == "nan":
+            return "ATM / Cash Withdrawal"
+        return val
+
     def find_linked_transactions(current_utr, current_beneficiary, current_layer_num):
+        # If the funds left via ATM, stop searching for next layers
+        if pd.isna(current_beneficiary) or str(current_beneficiary).strip() == "":
+            return
+            
         next_layer_str = str(current_layer_num + 1)
         
         linked_txns = df_raw[
@@ -70,7 +63,7 @@ def trace_utr_layers(df_raw):
                 "Amount debited from ICICI A/c No.": txn[sender_col],
                 "UTR No. And Date": f"{txn[utr_col]} | {txn[date_col]}",
                 "Amount Rs.": txn[amount_col],
-                "Amount credited into A/c No.": txn[beneficiary_col],
+                "Amount credited into A/c No.": format_beneficiary(txn[beneficiary_col]),
                 "Name and address of account holder": "N/A" 
             })
             
@@ -85,7 +78,7 @@ def trace_utr_layers(df_raw):
             "Amount debited from ICICI A/c No.": l1_txn[sender_col],
             "UTR No. And Date": f"{l1_txn[utr_col]} | {l1_txn[date_col]}",
             "Amount Rs.": l1_txn[amount_col],
-            "Amount credited into A/c No.": l1_txn[beneficiary_col],
+            "Amount credited into A/c No.": format_beneficiary(l1_txn[beneficiary_col]),
             "Name and address of account holder": "N/A"
         })
         
@@ -110,10 +103,7 @@ st.markdown('<div class="sub-header">Automated Layer Graph Traversal & Financial
 
 if uploaded_file is not None:
     try:
-        # Load data fast with cache
         df_raw = load_excel_data(uploaded_file)
-
-        # Tabbed Layout
         tab_report, tab_raw, tab_info = st.tabs(["📊 Traced Report", "📋 Raw Dataset Preview", "ℹ️ How it Works"])
 
         with tab_raw:
@@ -125,7 +115,6 @@ if uploaded_file is not None:
             with col_btn:
                 run_btn = st.button("🚀 Process & Trace Trail", use_container_width=True)
 
-            # Perform tracing if button is clicked or if already stored in session
             if run_btn or 'traced_df' in st.session_state:
                 if run_btn:
                     with st.spinner("Executing Depth-First Traversal across layers..."):
@@ -133,7 +122,6 @@ if uploaded_file is not None:
 
                 df_traced = st.session_state.traced_df
 
-                # Metrics Dashboard Summary
                 st.write("---")
                 m1, m2, m3 = st.columns(3)
                 
@@ -147,13 +135,13 @@ if uploaded_file is not None:
                 st.write("### Formatted Hierarchical Trail")
                 st.dataframe(df_traced, use_container_width=True, height=450)
 
-                # Download Options
+                # GUARANTEED EXCEL (.xlsx) EXPORT LOGIC
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df_traced.to_excel(writer, index=False, sheet_name='Traced_Trail')
 
                 st.download_button(
-                    label="📥 Download Formatted Spreadsheet (.xlsx)",
+                    label="📥 Download Formatted Excel Sheet (.xlsx)",
                     data=output.getvalue(),
                     file_name="Traced_Transaction_Trail.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -166,11 +154,10 @@ if uploaded_file is not None:
             * **Ingestion:** Parses input dataset while caching structured rows in memory.
             * **Root Identification:** Extracts all `Layer 1` root transactions and assigns primary Serial Numbers (`1, 2, 3...`).
             * **Recursive DFS Traversal:** Connects accounts where `Beneficiary Account (N)` becomes `Sender Account (N+1)`.
-            * **Clean Hierarchy Formatting:** Leaves inner layer `S. No.` fields intentionally blank to preserve structural visual grouping.
+            * **Terminal Nodes:** Automatically detects ATM withdrawals and safely terminates the traversal branch.
             """)
 
     except Exception as e:
         st.error(f"Error parsing file: {e}. Please ensure header names match the required schema.")
 else:
-    # Empty State Landing
     st.info("👈 Please upload a `.xlsx` transaction log file in the sidebar to begin tracing.")
